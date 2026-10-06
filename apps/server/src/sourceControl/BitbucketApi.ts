@@ -33,7 +33,21 @@ import * as SourceControlProvider from "./SourceControlProvider.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import {
+  encodeDataCenterBody,
+  DataCenterRepository,
+  DataCenterPullRequest,
+  dataCenterPage,
+  dataCenterRepositoryPath,
+  dataCenterRepositoryName,
+  dataCenterCloneUrls,
+  dataCenterSummary,
+} from "./bitbucketDataCenter.ts";
 import { retryAtFromHeader } from "./SourceControlRateLimit.ts";
+
+const decodeDataCenterRepository = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(DataCenterRepository),
+);
 
 const DEFAULT_API_BASE_URL = "https://api.bitbucket.org/2.0";
 /** A response body past this is cut short, so one huge diff cannot exhaust the server. */
@@ -45,6 +59,7 @@ const BitbucketApiEnvConfig = Config.all({
   baseUrl: Config.String("T3CODE_BITBUCKET_API_BASE_URL").pipe(
     Config.withDefault(DEFAULT_API_BASE_URL),
   ),
+  serverUrl: Config.String("T3CODE_BITBUCKET_SERVER_URL").pipe(Config.option),
   accessToken: Config.String("T3CODE_BITBUCKET_ACCESS_TOKEN").pipe(Config.option),
   email: Config.String("T3CODE_BITBUCKET_EMAIL").pipe(Config.option),
   apiToken: Config.String("T3CODE_BITBUCKET_API_TOKEN").pipe(Config.option),
@@ -254,7 +269,20 @@ export class BitbucketUntrustedUrlError extends Schema.TaggedError<BitbucketUntr
   }
 }
 
+export class BitbucketServerUrlError extends Schema.TaggedError<BitbucketServerUrlError>()(
+  "BitbucketServerUrlError",
+  {},
+) {
+  get detail(): string {
+    return "Set a valid HTTP(S) Bitbucket Data Center base URL without credentials, query, or fragment.";
+  }
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export const BitbucketApiError = Schema.Union([
+  BitbucketServerUrlError,
   BitbucketUntrustedUrlError,
   BitbucketRepositoryLocatorError,
   BitbucketRequestError,
@@ -327,6 +355,7 @@ export interface BitbucketRepositoryLocator {
 export class BitbucketApi extends Context.Service<
   BitbucketApi,
   {
+    readonly getServerUrl: Effect.Effect<string | null, BitbucketApiError>;
     readonly probeAuth: Effect.Effect<SourceControlProviderAuth, never>;
 
     /**
@@ -336,6 +365,7 @@ export class BitbucketApi extends Context.Service<
      */
     readonly request: (input: {
       readonly method: "GET" | "POST" | "PUT" | "DELETE";
+      readonly accept?: "text/plain";
       /**
        * A path below the API base, or a whole URL as a paged response reports its next page.
        * A whole URL is refused unless it belongs to the configured Bitbucket.
@@ -345,7 +375,10 @@ export class BitbucketApi extends Context.Service<
       readonly body?: string;
       /** Response bytes to keep; past this the body comes back cut short and marked. */
       readonly maxBytes?: number;
-    }) => Effect.Effect<{ readonly body: string; readonly truncated: boolean }, BitbucketApiError>;
+    }) => Effect.Effect<
+      { readonly body: string; readonly truncated: boolean; readonly account?: string },
+      BitbucketApiError
+    >;
     readonly listPullRequests: (input: {
       readonly cwd: string;
       readonly context?: SourceControlProvider.SourceControlProviderContext;
@@ -439,6 +472,10 @@ function bitbucketStateFilter(states: ReadonlyArray<string>): string {
 function parseBitbucketRepositorySlug(value: string): BitbucketRepositoryLocator | null {
   const normalized = value.trim().replace(/\.git$/u, "");
   const parts = normalized.split("/").filter((part) => part.length > 0);
+  const web = /(?:^|\/)projects\/([^/]+)\/repos\/([^/]+)(?:\/|$)/iu.exec(normalized);
+  if (web?.[1] && web[2]) return { workspace: web[1], repoSlug: web[2] };
+  const personal = /(?:^|\/)users\/([^/]+)\/repos\/([^/]+)(?:\/|$)/iu.exec(normalized);
+  if (personal?.[1] && personal[2]) return { workspace: `~${personal[1]}`, repoSlug: personal[2] };
   if (parts.length < 2) return null;
   const workspace = parts.at(-2);
   const repoSlug = parts.at(-1);
@@ -676,6 +713,46 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  const getServerUrl = serverSettings.getSettings.pipe(
+    Effect.map(
+      (settings) => settings.bitbucket.serverUrl ?? Option.getOrElse(config.serverUrl, () => ""),
+    ),
+    Effect.catch(() => Effect.succeed(Option.getOrElse(config.serverUrl, () => ""))),
+    Effect.flatMap((value): Effect.Effect<string | null, BitbucketApiError> => {
+      if (value.trim() === "") return Effect.succeed(null);
+      try {
+        const url = new URL(value.trim());
+        if (
+          !["http:", "https:"].includes(url.protocol) ||
+          url.username ||
+          url.password ||
+          url.search ||
+          url.hash
+        ) {
+          return Effect.fail(new BitbucketServerUrlError());
+        }
+        return Effect.succeed(url.href.replace(/\/+$/u, ""));
+      } catch {
+        return Effect.fail(new BitbucketServerUrlError());
+      }
+    }),
+  );
+
+  const matchesServer = (remote: string, server: string) => {
+    const scp = /^[^@]+@([^:/]+):/.exec(remote);
+    try {
+      const base = new URL(server);
+      if (scp) return scp[1]?.toLowerCase() === base.hostname.toLowerCase();
+      const url = new URL(remote);
+      return url.protocol === "ssh:"
+        ? url.hostname.toLowerCase() === base.hostname.toLowerCase()
+        : url.origin === base.origin &&
+            url.pathname.startsWith(`${base.pathname.replace(/\/+$/u, "")}/`);
+    } catch {
+      return false;
+    }
+  };
+
   const withAuth = (request: HttpClientRequest.HttpClientRequest) =>
     currentCredential.pipe(
       Effect.map((credential) =>
@@ -729,8 +806,23 @@ export const make = Effect.gen(function* () {
     readonly context?: SourceControlProvider.SourceControlProviderContext;
     readonly repository?: string;
   }) {
+    const server = yield* getServerUrl;
     if (input.repository !== undefined) {
+      if (
+        server &&
+        /^(?:[a-z]+:\/\/|[^@]+@)/iu.test(input.repository) &&
+        !matchesServer(input.repository, server)
+      ) {
+        return yield* new BitbucketUntrustedUrlError({
+          host: originOf(input.repository) ?? "another host",
+        });
+      }
       return yield* requireRepositoryLocator(input.repository);
+    }
+    if (server && input.context && !matchesServer(input.context.remoteUrl, server)) {
+      return yield* new BitbucketUntrustedUrlError({
+        host: originOf(input.context.remoteUrl) ?? "another host",
+      });
     }
 
     const fromContext =
@@ -759,7 +851,12 @@ export const make = Effect.gen(function* () {
     );
 
     for (const remote of remotes.remotes) {
-      if (detectSourceControlProviderFromRemoteUrl(remote.url)?.kind !== "bitbucket") continue;
+      if (
+        server
+          ? !matchesServer(remote.url, server)
+          : detectSourceControlProviderFromRemoteUrl(remote.url)?.kind !== "bitbucket"
+      )
+        continue;
       const parsed = parseBitbucketRemoteUrl(remote.url);
       if (parsed) return parsed;
     }
@@ -868,13 +965,19 @@ export const make = Effect.gen(function* () {
    * pagination cursor, or the target of a redirect — is data, not instruction, so it is checked
    * against this before the account's token travels with it.
    */
-  const apiOrigin = originOf(config.baseUrl);
-
-  const trustedUrl = (value: string): string | null => {
-    if (!/^https?:\/\//u.test(value)) return apiUrl(value);
-    const origin = originOf(value);
-    return origin !== null && origin === apiOrigin ? value : null;
-  };
+  const trustedUrl = (value: string) =>
+    getServerUrl.pipe(
+      Effect.map((server) => {
+        const base = server ?? config.baseUrl.replace(/\/+$/u, "");
+        if (!/^https?:\/\//u.test(value)) return `${base}${value}`;
+        try {
+          const url = new URL(value);
+          return url.origin === originOf(base) && !url.username && !url.password ? value : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
 
   /**
    * Redirects are followed here rather than by the client, which forwards every header to
@@ -886,49 +989,55 @@ export const make = Effect.gen(function* () {
     readonly url: string;
     readonly body?: string;
     readonly redirects: number;
-  }): Effect.Effect<HttpClientResponse.HttpClientResponse, BitbucketApiError> => {
-    const url = trustedUrl(input.url);
-    if (url === null) {
-      return Effect.fail(
-        new BitbucketUntrustedUrlError({ host: originOf(input.url) ?? "an unreadable url" }),
+    readonly accept?: "text/plain";
+  }): Effect.Effect<HttpClientResponse.HttpClientResponse, BitbucketApiError> =>
+    Effect.gen(function* () {
+      const url = yield* trustedUrl(input.url);
+      if (url === null) {
+        return yield* new BitbucketUntrustedUrlError({
+          host: originOf(input.url) ?? "an unreadable url",
+        });
+      }
+      const base =
+        input.method === "GET"
+          ? HttpClientRequest.get(url)
+          : input.method === "POST"
+            ? HttpClientRequest.post(url)
+            : input.method === "DELETE"
+              ? HttpClientRequest.make("DELETE")(url)
+              : HttpClientRequest.put(url);
+      // No `Accept: application/json`: the diff endpoints answer with a patch, not JSON.
+      const withBody =
+        input.body === undefined
+          ? base
+          : base.pipe(HttpClientRequest.bodyText(input.body, "application/json"));
+      return yield* withAuth(
+        input.accept
+          ? withBody.pipe(HttpClientRequest.setHeader("Accept", input.accept))
+          : withBody,
+      ).pipe(
+        Effect.flatMap(httpClient.execute),
+        Effect.mapError(
+          (cause): BitbucketApiError => new BitbucketRequestError({ operation: "request", cause }),
+        ),
+        Effect.flatMap((response) => {
+          const location = response.headers.location;
+          if (
+            response.status >= 300 &&
+            response.status < 400 &&
+            location !== undefined &&
+            input.redirects < MAX_REDIRECTS
+          ) {
+            return send({
+              ...input,
+              url: new URL(location, url).toString(),
+              redirects: input.redirects + 1,
+            });
+          }
+          return Effect.succeed(response);
+        }),
       );
-    }
-    const base =
-      input.method === "GET"
-        ? HttpClientRequest.get(url)
-        : input.method === "POST"
-          ? HttpClientRequest.post(url)
-          : input.method === "DELETE"
-            ? HttpClientRequest.make("DELETE")(url)
-            : HttpClientRequest.put(url);
-    // No `Accept: application/json`: the diff endpoints answer with a patch, not JSON.
-    const withBody =
-      input.body === undefined
-        ? base
-        : base.pipe(HttpClientRequest.bodyText(input.body, "application/json"));
-    return withAuth(withBody).pipe(
-      Effect.flatMap(httpClient.execute),
-      Effect.mapError(
-        (cause): BitbucketApiError => new BitbucketRequestError({ operation: "request", cause }),
-      ),
-      Effect.flatMap((response) => {
-        const location = response.headers.location;
-        if (
-          response.status >= 300 &&
-          response.status < 400 &&
-          location !== undefined &&
-          input.redirects < MAX_REDIRECTS
-        ) {
-          return send({
-            ...input,
-            url: new URL(location, url).toString(),
-            redirects: input.redirects + 1,
-          });
-        }
-        return Effect.succeed(response);
-      }),
-    );
-  };
+    });
 
   const request: BitbucketApi["Service"]["request"] = (input) =>
     send({ ...input, redirects: 0 }).pipe(
@@ -953,6 +1062,9 @@ export const make = Effect.gen(function* () {
               Effect.map((collected) => ({
                 body: collected.text,
                 truncated: collected.truncated,
+                ...(success.headers["x-ausername"]
+                  ? { account: success.headers["x-ausername"] }
+                  : {}),
               })),
             ),
           orElse: (failed) => responseError("request", failed),
@@ -960,7 +1072,8 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  return BitbucketApi.of({
+  const cloud = BitbucketApi.of({
+    getServerUrl,
     request,
     probeAuth: executeJson(
       "probeAuth",
@@ -1157,6 +1270,260 @@ export const make = Effect.gen(function* () {
               }),
         ),
       ),
+  });
+
+  const readDataCenter = <S extends Schema.Top>(url: string, schema: S) =>
+    request({ method: "GET", url }).pipe(
+      Effect.flatMap((response) =>
+        Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(response.body),
+      ),
+      Effect.mapError((cause): BitbucketApiError =>
+        isBitbucketApiError(cause)
+          ? cause
+          : new BitbucketResponseDecodeError({ operation: "request", status: 200, cause }),
+      ),
+    );
+  const repositoryPath = (locator: BitbucketRepositoryLocator) =>
+    dataCenterRepositoryPath(locator.workspace, locator.repoSlug);
+  const dcRawPullRequest = (input: Parameters<BitbucketApi["Service"]["getPullRequest"]>[0]) =>
+    resolveRepository(input).pipe(
+      Effect.flatMap((locator) =>
+        readDataCenter(
+          `${repositoryPath(locator)}/pull-requests/${encodeURIComponent(normalizeChangeRequestId(input.reference))}`,
+          DataCenterPullRequest,
+        ),
+      ),
+    );
+  const dataCenter: BitbucketApi["Service"] = {
+    request,
+    getServerUrl,
+    probeAuth: getServerUrl.pipe(
+      Effect.flatMap((server) =>
+        request({ method: "GET", url: "/rest/api/1.0/repos?limit=1" }).pipe(
+          Effect.map((response): SourceControlProviderAuth => ({
+            status:
+              response.account && response.account !== "anonymous" ? "authenticated" : "unknown",
+            account: nonEmpty(response.account),
+            host: nonEmpty(server ? new URL(server).host : undefined),
+            detail: Option.none(),
+          })),
+          Effect.catch((error) =>
+            currentCredential.pipe(
+              Effect.map((credential) => ({
+                ...authFromCredential(credential),
+                ...(error._tag === "BitbucketResponseError" && error.status === 401
+                  ? {
+                      status: "unauthenticated" as const,
+                      detail: Option.some("Bitbucket rejected the configured credentials."),
+                    }
+                  : {}),
+                host: nonEmpty(server ? new URL(server).host : undefined),
+              })),
+            ),
+          ),
+        ),
+      ),
+      Effect.catch(() =>
+        Effect.succeed({
+          status: "unknown" as const,
+          account: Option.none(),
+          host: Option.none(),
+          detail: Option.some(new BitbucketServerUrlError().detail),
+        }),
+      ),
+    ),
+    getRepositoryCloneUrls: (input) =>
+      resolveRepository(input).pipe(
+        Effect.flatMap((locator) => readDataCenter(repositoryPath(locator), DataCenterRepository)),
+        Effect.map(dataCenterCloneUrls),
+      ),
+    createRepository: (input) =>
+      Effect.gen(function* () {
+        const locator = yield* resolveRepository(input);
+        const response = yield* request({
+          method: "POST",
+          url: `/rest/api/1.0/projects/${encodeURIComponent(locator.workspace)}/repos`,
+          body: encodeDataCenterBody({
+            name: locator.repoSlug,
+            scmId: "git",
+            public: input.visibility === "public",
+          }),
+        });
+        const raw = yield* decodeDataCenterRepository(response.body).pipe(
+          Effect.mapError(
+            (cause) =>
+              new BitbucketResponseDecodeError({
+                operation: "createRepository",
+                status: 201,
+                cause,
+              }),
+          ),
+        );
+        return dataCenterCloneUrls(raw);
+      }),
+    getDefaultBranch: (input) =>
+      resolveRepository(input).pipe(
+        Effect.flatMap((locator) =>
+          readDataCenter(
+            `${repositoryPath(locator)}/branches/default`,
+            Schema.Struct({ displayId: Schema.String }),
+          ),
+        ),
+        Effect.map((branch) => branch.displayId),
+      ),
+    getPullRequest: (input) => dcRawPullRequest(input).pipe(Effect.map(dataCenterSummary)),
+    listPullRequests: (input) =>
+      Effect.gen(function* () {
+        const locator = yield* resolveRepository(input);
+        const limit = Math.max(1, Math.min(input.limit ?? 20, 100));
+        const matches: NormalizedBitbucketPullRequestRecord[] = [];
+        let start = 0;
+        for (let page = 0; page < 10; page++) {
+          const params = new URLSearchParams({
+            state:
+              input.state === "all"
+                ? "ALL"
+                : input.state === "closed"
+                  ? "DECLINED"
+                  : input.state.toUpperCase(),
+            direction: "INCOMING",
+            limit: "100",
+            start: String(start),
+          });
+          const list = yield* readDataCenter(
+            `${repositoryPath(locator)}/pull-requests?${params}`,
+            dataCenterPage(DataCenterPullRequest),
+          );
+          for (const pr of list.values) {
+            const owner = sourceWorkspace(input);
+            if (pr.fromRef.displayId !== SourceControlProvider.sourceBranch(input)) continue;
+            if (owner && pr.fromRef.repository.project.key.toLowerCase() !== owner.toLowerCase())
+              continue;
+            if (input.source?.repository && pr.fromRef.repository.slug !== input.source.repository)
+              continue;
+            matches.push(dataCenterSummary(pr));
+          }
+          if (matches.length >= limit || list.isLastPage) return matches.slice(0, limit);
+          if (list.nextPageStart === undefined || list.nextPageStart <= start)
+            return yield* new BitbucketResponseDecodeError({
+              operation: "listPullRequests",
+              status: 200,
+              cause: new Error("Non-advancing Data Center page"),
+            });
+          start = list.nextPageStart;
+        }
+        return matches.slice(0, limit);
+      }),
+    createPullRequest: (input) =>
+      Effect.gen(function* () {
+        const locator = yield* resolveRepository(input);
+        const description = yield* fileSystem.readFileString(input.bodyFile).pipe(
+          Effect.mapError(
+            (cause) =>
+              new BitbucketPullRequestBodyReadError({
+                cwd: input.cwd,
+                bodyFile: input.bodyFile,
+                cause,
+              }),
+          ),
+        );
+        yield* request({
+          method: "POST",
+          url: `${repositoryPath(locator)}/pull-requests`,
+          body: encodeDataCenterBody({
+            title: input.title,
+            description,
+            fromRef: {
+              id: `refs/heads/${SourceControlProvider.sourceBranch(input)}`,
+              repository: {
+                slug: input.source?.repository ?? locator.repoSlug,
+                project: { key: sourceWorkspace(input) ?? locator.workspace },
+              },
+            },
+            toRef: {
+              id: `refs/heads/${input.target?.refName ?? input.baseBranch}`,
+              repository: { slug: locator.repoSlug, project: { key: locator.workspace } },
+            },
+          }),
+        });
+      }),
+    checkoutPullRequest: (input) =>
+      Effect.gen(function* () {
+        const pr = yield* dcRawPullRequest(input);
+        const sourceName = dataCenterRepositoryName(pr.fromRef.repository);
+        const destinationName = dataCenterRepositoryName(pr.toRef.repository);
+        const source = pr.fromRef.repository;
+        const urls = yield* readDataCenter(
+          dataCenterRepositoryPath(source.project.key, source.slug),
+          DataCenterRepository,
+        ).pipe(Effect.map(dataCenterCloneUrls));
+        const origin = yield* readConfigValueNullable(input.cwd, "remote.origin.url");
+        const remoteName =
+          input.context && sourceName === destinationName
+            ? input.context.remoteName
+            : yield* git.ensureRemote({
+                cwd: input.cwd,
+                preferredName: source.project.key,
+                url: selectCloneUrl({ cloneUrls: urls, originRemoteUrl: origin }),
+              });
+        const localBranch = checkoutBranchName({
+          pullRequestId: pr.id,
+          headBranch: pr.fromRef.displayId,
+          isCrossRepository: sourceName !== destinationName,
+        });
+        const branches = yield* git.listLocalBranchNames(input.cwd);
+        if (input.force || !branches.includes(localBranch))
+          yield* git.fetchRemoteBranch({
+            cwd: input.cwd,
+            remoteName,
+            remoteBranch: pr.fromRef.displayId,
+            localBranch,
+          });
+        else
+          yield* git.fetchRemoteTrackingBranch({
+            cwd: input.cwd,
+            remoteName,
+            remoteBranch: pr.fromRef.displayId,
+          });
+        yield* git.setBranchUpstream({
+          cwd: input.cwd,
+          branch: localBranch,
+          remoteName,
+          remoteBranch: pr.fromRef.displayId,
+        });
+        yield* Effect.scoped(git.switchRef({ cwd: input.cwd, refName: localBranch }));
+      }).pipe(
+        Effect.mapError((cause): BitbucketApiError =>
+          isBitbucketApiError(cause)
+            ? cause
+            : new BitbucketCheckoutError({ cwd: input.cwd, reference: input.reference, cause }),
+        ),
+      ),
+  };
+
+  const route = <A>(
+    cloudEffect: Effect.Effect<A, BitbucketApiError>,
+    nativeEffect: Effect.Effect<A, BitbucketApiError>,
+  ) => getServerUrl.pipe(Effect.flatMap((server) => (server ? nativeEffect : cloudEffect)));
+  return BitbucketApi.of({
+    request,
+    getServerUrl,
+    probeAuth: route(cloud.probeAuth, dataCenter.probeAuth).pipe(
+      Effect.catch(() => dataCenter.probeAuth),
+    ),
+    listPullRequests: (input) =>
+      route(cloud.listPullRequests(input), dataCenter.listPullRequests(input)),
+    getPullRequest: (input) => route(cloud.getPullRequest(input), dataCenter.getPullRequest(input)),
+    getRepositoryCloneUrls: (input) =>
+      route(cloud.getRepositoryCloneUrls(input), dataCenter.getRepositoryCloneUrls(input)),
+    createRepository: (input) =>
+      route(cloud.createRepository(input), dataCenter.createRepository(input)),
+    createPullRequest: (input) =>
+      route(cloud.createPullRequest(input), dataCenter.createPullRequest(input)),
+    getDefaultBranch: (input) =>
+      route(cloud.getDefaultBranch(input), dataCenter.getDefaultBranch(input)),
+    checkoutPullRequest: (input) =>
+      route(cloud.checkoutPullRequest(input), dataCenter.checkoutPullRequest(input)),
   });
 });
 

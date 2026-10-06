@@ -188,3 +188,40 @@ describe("changeRequestUrlFor", () => {
     });
   });
 });
+
+describe("Bitbucket Data Center URLs", () => {
+  const url =
+    "https://git.company.test:8443/bitbucket/projects/PROJ/repos/app/pull-requests/42/overview";
+  it("parses the native project repository and pull request on a company host", () => {
+    expect(parseChangeRequestUrl(url)).toEqual({
+      host: "git.company.test",
+      authority: "git.company.test:8443",
+      repository: "proj/app",
+      number: 42,
+    });
+  });
+  it("keeps the port and context path when changing pull request numbers", () => {
+    expect(siblingPullRequestUrl(url, 43)).toBe(
+      "https://git.company.test:8443/bitbucket/projects/PROJ/repos/app/pull-requests/43",
+    );
+  });
+  it("builds the native URL from an HTTP clone remote", () => {
+    expect(
+      changeRequestUrlFor(
+        "bitbucket",
+        "git.company.test:8443",
+        "proj/app",
+        42,
+        "https://git.company.test:8443/bitbucket/scm/proj/app.git",
+      ),
+    ).toBe("https://git.company.test:8443/bitbucket/projects/proj/repos/app/pull-requests/42");
+  });
+});
+
+it("maps Data Center personal-project URLs to their ~username repository keys", () => {
+  const url = "https://git.company.test/bitbucket/users/Bob/repos/app/pull-requests/42";
+  expect(parseChangeRequestUrl(url)?.repository).toBe("~bob/app");
+  expect(siblingPullRequestUrl(url, 43)).toBe(
+    "https://git.company.test/bitbucket/users/Bob/repos/app/pull-requests/43",
+  );
+});

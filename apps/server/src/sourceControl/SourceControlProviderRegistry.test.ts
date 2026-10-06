@@ -93,7 +93,7 @@ function makeRegistry(input: {
         layerRegistry,
         layerProcess,
         Layer.mock(AzureDevOpsCli.AzureDevOpsCli)({}),
-        Layer.mock(BitbucketApi.BitbucketApi)({}),
+        Layer.mock(BitbucketApi.BitbucketApi)({ getServerUrl: Effect.succeed(null) }),
         Layer.mock(GitHubCli.GitHubCli)(input.github ?? {}),
         Layer.mock(GitLabCli.GitLabCli)(input.gitlab ?? {}),
         Layer.mock(ForgejoCli.ForgejoCli)({ listLogins: () => Effect.succeed([]) }),

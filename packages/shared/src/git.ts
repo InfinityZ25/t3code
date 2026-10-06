@@ -180,6 +180,12 @@ export function normalizeGitRemoteUrl(value: string): string {
       if (url.hostname && repositorySegments.length > 1) {
         return (
           azureDevOpsRepositoryKey(url.hostname, repositorySegments) ??
+          (url.protocol === "http:" || url.protocol === "https:"
+            ? (() => {
+                const match = /\/scm\/([^/]+)\/([^/]+)$/u.exec(url.pathname);
+                return match ? `${url.hostname}/${match[1]}/${match[2]}` : null;
+              })()
+            : null) ??
           `${url.hostname}/${repositorySegments.join("/")}`
         );
       }

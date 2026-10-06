@@ -190,6 +190,29 @@ export const makeDiscovery = Effect.gen(function* () {
 
   return {
     type: "api",
+    refineUnknownRemote: ({ context }) =>
+      bitbucket.getServerUrl.pipe(
+        Effect.map((server) => {
+          if (!server) return null;
+          try {
+            const base = new URL(server);
+            const scp = /^[^@]+@([^:/]+):/.exec(context.remoteUrl);
+            const remote = scp ? null : new URL(context.remoteUrl);
+            const matches = scp
+              ? scp[1]?.toLowerCase() === base.hostname.toLowerCase()
+              : remote?.protocol === "ssh:"
+                ? remote.hostname.toLowerCase() === base.hostname.toLowerCase()
+                : remote?.origin === base.origin &&
+                  remote.pathname.startsWith(`${base.pathname.replace(/\/+$/u, "")}/`);
+            return matches
+              ? { kind: "bitbucket" as const, name: "Bitbucket Data Center", baseUrl: server }
+              : null;
+          } catch {
+            return null;
+          }
+        }),
+        Effect.orElseSucceed(() => null),
+      ),
     kind: "bitbucket",
     label: "Bitbucket",
     installHint: "Add a Bitbucket token in Settings → Source Control.",

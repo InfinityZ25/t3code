@@ -14,6 +14,7 @@ const layer = it.layer(
     Layer.provide(
       Layer.mock(BitbucketApi.BitbucketApi)({
         request: mockedRequest,
+        getServerUrl: Effect.succeed(null),
       }),
     ),
   ),

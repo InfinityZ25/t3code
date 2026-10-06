@@ -63,6 +63,23 @@ export function parseChangeRequestUrl(targetUrl: string): ChangeRequestLink | nu
   // separator is GitLab's own, so the hostname is not asked about.
   const gitlab = /^\/([^/]+(?:\/[^/]+)+)\/-\/merge_requests\/(\d+)(?:\/|$)/u.exec(url.pathname);
   if (gitlab) return claim(host, gitlab);
+  // Data Center uses a distinct path shape on arbitrary company hosts and context paths.
+  const dataCenter =
+    /^(?:\/[^/]+)*\/(projects|users)\/([^/]+)\/repos\/([^/]+)\/pull-requests\/(\d+)(?:\/|$)/u.exec(
+      url.pathname,
+    );
+  if (dataCenter?.[2] && dataCenter[3]) {
+    const number = Number(dataCenter[4]);
+    return Number.isSafeInteger(number) && number > 0
+      ? {
+          host,
+          repository:
+            `${dataCenter[1] === "users" ? "~" : ""}${dataCenter[2]}/${dataCenter[3]}`.toLowerCase(),
+          number,
+          authority: url.host.toLowerCase(),
+        }
+      : null;
+  }
   // Bitbucket Cloud: /{workspace}/{repo}/pull-requests/{n}
   if (isHostOf(host, "bitbucket.org", "bitbucket")) {
     const match = /^\/([^/]+\/[^/]+)\/pull-requests\/(\d+)(?:\/|$)/u.exec(url.pathname);
@@ -113,8 +130,26 @@ export function changeRequestUrlFor(
     }
     case "gitlab":
       return `https://${host}/${repository}/-/merge_requests/${number}`;
-    case "bitbucket":
-      return `https://${host}/${repository}/pull-requests/${number}`;
+    case "bitbucket": {
+      if (host === "bitbucket.org") return `https://${host}/${repository}/pull-requests/${number}`;
+      const [project, slug] = repository.split("/");
+      if (!project || !slug) return null;
+      try {
+        const remote = new URL(remoteUrl ?? "");
+        const context = /^(.*)\/scm\//u.exec(remote.pathname)?.[1];
+        if (
+          /^https?:$/u.test(remote.protocol) &&
+          (remote.hostname.toLowerCase() === host.toLowerCase() ||
+            remote.host.toLowerCase() === host.toLowerCase()) &&
+          context !== undefined
+        ) {
+          return `${remote.origin}${context}/projects/${project}/repos/${slug}/pull-requests/${number}`;
+        }
+      } catch {
+        /* SSH remotes do not carry the web origin. */
+      }
+      return `https://${host}/projects/${project}/repos/${slug}/pull-requests/${number}`;
+    }
     case "azure-devops":
       return `https://${canonicalRepositoryKey(`${host}/${repository}`.toLowerCase())}/pullrequest/${number}`;
     default:
@@ -224,11 +259,18 @@ export function siblingPullRequestUrl(url: string, number: number): string | nul
   const reference = parseChangeRequestUrl(url);
   if (reference === null || !Number.isSafeInteger(number) || number < 1) return null;
   const sibling = new URL(url);
-  const route = /^\/(-\/merge_requests|pulls?|pull-requests|pullrequest)\/\d+(?:\/|$)/u.exec(
-    sibling.pathname.slice(reference.repository.length + 1),
-  )?.[1];
-  if (route === undefined) return null;
-  sibling.pathname = `/${reference.repository}/${route}/${number}`;
+  const dataCenter =
+    /^(.*\/(?:projects|users)\/[^/]+\/repos\/[^/]+)\/pull-requests\/\d+(?:\/|$)/u.exec(
+      sibling.pathname,
+    );
+  if (dataCenter?.[1]) sibling.pathname = `${dataCenter[1]}/pull-requests/${number}`;
+  else {
+    const route = /^\/(-\/merge_requests|pulls?|pull-requests|pullrequest)\/\d+(?:\/|$)/u.exec(
+      sibling.pathname.slice(reference.repository.length + 1),
+    )?.[1];
+    if (route === undefined) return null;
+    sibling.pathname = `/${reference.repository}/${route}/${number}`;
+  }
   sibling.search = "";
   sibling.hash = "";
   return sibling.toString();

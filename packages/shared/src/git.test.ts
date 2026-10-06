@@ -341,3 +341,9 @@ describe("formatGeneratedBranchName", () => {
     ).toBe(branch);
   });
 });
+
+it("normalizes Data Center HTTP and SSH remotes to the same repository identity", () => {
+  expect(normalizeGitRemoteUrl("https://git.company.test:8443/bitbucket/scm/PROJ/app.git")).toBe(
+    normalizeGitRemoteUrl("ssh://git@git.company.test:7999/PROJ/app.git"),
+  );
+});

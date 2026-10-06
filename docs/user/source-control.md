@@ -45,7 +45,7 @@ Install [GitLab CLI](https://gitlab.com/gitlab-org/cli), then sign in:
 glab auth login
 ```
 
-### Bitbucket
+### Bitbucket Cloud
 
 Open **Settings → Source Control**, expand **Bitbucket**, and choose how to sign in:
 
@@ -69,6 +69,34 @@ export T3CODE_BITBUCKET_ACCESS_TOKEN="your-access-token"
 export T3CODE_BITBUCKET_EMAIL="you@example.com"
 export T3CODE_BITBUCKET_API_TOKEN="your-token"
 ```
+
+### Bitbucket Data Center
+
+For a self-hosted Bitbucket Data Center 9.4 server, open **Settings → Source Control → Bitbucket**.
+Enter the **Data Center server URL**, including any port and context path, such as
+`https://git.company.com:8443/bitbucket`. Enter a personal HTTP access token with repository
+read and write permissions and choose **Save**. Leave the server URL empty to use Bitbucket Cloud.
+Each T3 Code environment connects to one Bitbucket deployment.
+
+You can also configure Data Center on the machine running your T3 Code server:
+
+```bash
+export T3CODE_BITBUCKET_SERVER_URL="https://git.company.com/bitbucket"
+export T3CODE_BITBUCKET_ACCESS_TOKEN="your-personal-access-token"
+```
+
+Restart after changing environment variables, then choose **Rescan**. Saved settings take
+precedence; saving an empty server URL explicitly selects Cloud. Use `PROJECT_KEY/repository-slug`
+(or a full repository URL) to clone or publish. Personal projects use `~username/repository-slug`.
+Publishing creates a repository in an existing project and needs permission to create repositories
+there. Git clone, fetch, and push use the server machine's Git credentials or SSH keys; the token
+saved in T3 Code authenticates API requests.
+
+Data Center supports pull request creation, checkout, review, comments, reviewer requests,
+merging, and declining. Merge checks and permitted merge strategies remain controlled by your
+Bitbucket repository. Listings use Bitbucket's creation order and are bounded to 1,000 entries
+per request. Configure private certificate authorities through Node's `NODE_EXTRA_CA_CERTS` when
+starting the T3 Code server.
 
 ### Azure DevOps
 
@@ -142,8 +170,8 @@ for ten minutes during a GitHub outage; new credentials must be verified first. 
 an uncertain result is never automatically retried elsewhere. Listings, diffs, and checkout or
 PR creation from Git actions continue to use the project's environment.
 
-For Azure DevOps, use the host website to change comments. Bitbucket does not support reopening a
-declined pull request.
+For Azure DevOps, use the host website to change comments. Reopen declined Bitbucket Data Center
+pull requests on the host website; Bitbucket Cloud does not support reopening them.
 
 ### Mark files as viewed
 

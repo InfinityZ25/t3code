@@ -239,3 +239,24 @@ it("names nothing for a project with no remote to name it by", () => {
   expect(sourceControlRepositorySelector(null)).toBeNull();
   expect(sourceControlRepositorySelector({ provider: "github" })).toBeNull();
 });
+
+describe("Bitbucket Data Center", () => {
+  it("detects HTTP clone paths on arbitrary hosts, preserving the port and context path", () => {
+    expect(
+      detectSourceControlProviderFromRemoteUrl(
+        "http://git.company.test:7990/bitbucket/scm/PROJ/app.git",
+      ),
+    ).toEqual({
+      kind: "bitbucket",
+      name: "Bitbucket Data Center",
+      baseUrl: "http://git.company.test:7990/bitbucket",
+    });
+  });
+  it("recognizes native repository browser URLs", () => {
+    expect(
+      detectSourceControlProviderFromRemoteUrl(
+        "https://git.company.test/projects/PROJ/repos/app/browse",
+      )?.kind,
+    ).toBe("bitbucket");
+  });
+});

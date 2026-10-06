@@ -84,32 +84,62 @@ export function BitbucketCredentialsSettings({
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
     label: "save Bitbucket credentials",
   });
+  const [serverUrlDraft, setServerUrlDraft] = useState<string | null>(null);
+  const serverUrl = (serverUrlDraft ?? saved.serverUrl ?? "").trim();
+  const isDataCenter = serverUrl.length > 0;
+  let validServerUrl = true;
+  if (isDataCenter) {
+    try {
+      const url = new URL(serverUrl);
+      validServerUrl =
+        ["http:", "https:"].includes(url.protocol) &&
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash;
+    } catch {
+      validServerUrl = false;
+    }
+  }
   const [methodChoice, setMethodChoice] = useState<CredentialMethod | null>(null);
   const [accessToken, setAccessToken] = useState("");
   const [emailDraft, setEmailDraft] = useState<string | null>(null);
   const [apiToken, setApiToken] = useState("");
   const [saving, setSaving] = useState(false);
   const current = savedMethod(saved);
-  const method = methodChoice ?? current ?? "access-token";
+  const method = isDataCenter ? "access-token" : (methodChoice ?? current ?? "access-token");
   const methodIsSaved = current === method;
   const email = (emailDraft ?? saved.email).trim();
   const newAccessToken = accessToken.trim();
   const newApiToken = apiToken.trim();
-  const info = METHODS[method];
+  const info = isDataCenter
+    ? {
+        label: "Personal access token",
+        description:
+          "Bitbucket Data Center 9.4: use an HTTP access token with repository read and write permissions. Git also needs credentials or an SSH key on the server.",
+        link: "https://confluence.atlassian.com/bitbucketserver094/http-access-tokens-1489801827.html",
+        linkLabel: "Learn more",
+      }
+    : METHODS[method];
 
   // Saving one method clears the other, so a hidden credential never wins over the visible one.
   const patch: BitbucketSettings | null =
     method === "access-token"
-      ? newAccessToken
-        ? { accessToken: newAccessToken, email: "", apiToken: "" }
+      ? newAccessToken || saved.accessToken
+        ? { serverUrl, accessToken: newAccessToken || saved.accessToken, email: "", apiToken: "" }
         : null
       : email && (newApiToken || saved.apiToken)
         ? // Resending the saved token's redacted value keeps it.
-          { accessToken: "", email, apiToken: newApiToken || saved.apiToken }
+          { serverUrl, accessToken: "", email, apiToken: newApiToken || saved.apiToken }
         : null;
   const canSave =
+    validServerUrl &&
     patch !== null &&
-    (method === "access-token" || !methodIsSaved || newApiToken !== "" || email !== saved.email);
+    (newAccessToken !== "" ||
+      !methodIsSaved ||
+      newApiToken !== "" ||
+      email !== saved.email ||
+      serverUrl !== (saved.serverUrl ?? ""));
 
   const save = async (next: BitbucketSettings) => {
     setSaving(true);
@@ -122,6 +152,7 @@ export function BitbucketCredentialsSettings({
         setAccessToken("");
         setApiToken("");
         setEmailDraft(null);
+        setServerUrlDraft(null);
         onSaved();
       }
     } finally {
@@ -139,18 +170,39 @@ export function BitbucketCredentialsSettings({
     >
       {/* Locked while saving: a successful save clears the drafts, which would drop edits made mid-request. */}
       <fieldset disabled={saving} className="contents">
-        <ToggleGroup
-          aria-label="Bitbucket sign-in method"
-          variant="segmented"
-          value={[method]}
-          onValueChange={(next) => {
-            const value = next[0];
-            if (value === "access-token" || value === "api-token") setMethodChoice(value);
-          }}
-        >
-          <Toggle value="access-token">{METHODS["access-token"].label}</Toggle>
-          <Toggle value="api-token">{METHODS["api-token"].label}</Toggle>
-        </ToggleGroup>
+        <div className="grid gap-1.5">
+          <Label htmlFor={`bitbucket-server-url-${environmentId}`}>Data Center server URL</Label>
+          <Input
+            id={`bitbucket-server-url-${environmentId}`}
+            type="url"
+            size="sm"
+            placeholder="https://git.company.com/bitbucket"
+            value={serverUrlDraft ?? saved.serverUrl ?? ""}
+            onChange={(event) => setServerUrlDraft(event.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            Leave empty for Bitbucket Cloud. Include your server's port and context path, if any.
+          </p>
+          {!validServerUrl ? (
+            <p className="text-xs text-destructive">
+              Enter an HTTP(S) server URL without credentials, a query, or a fragment.
+            </p>
+          ) : null}
+        </div>
+        {!isDataCenter ? (
+          <ToggleGroup
+            aria-label="Bitbucket sign-in method"
+            variant="segmented"
+            value={[method]}
+            onValueChange={(next) => {
+              const value = next[0];
+              if (value === "access-token" || value === "api-token") setMethodChoice(value);
+            }}
+          >
+            <Toggle value="access-token">{METHODS["access-token"].label}</Toggle>
+            <Toggle value="api-token">{METHODS["api-token"].label}</Toggle>
+          </ToggleGroup>
+        ) : null}
         <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
           {info.description}{" "}
           <InlineButton render={<a href={info.link} target="_blank" rel="noreferrer noopener" />}>
@@ -160,7 +212,9 @@ export function BitbucketCredentialsSettings({
         </p>
         {method === "access-token" ? (
           <div className="grid gap-1.5">
-            <Label htmlFor={`bitbucket-access-token-${environmentId}`}>Access token</Label>
+            <Label htmlFor={`bitbucket-access-token-${environmentId}`}>
+              {isDataCenter ? "Personal access token" : "Access token"}
+            </Label>
             <TokenInput
               id={`bitbucket-access-token-${environmentId}`}
               isSaved={methodIsSaved}
@@ -207,7 +261,14 @@ export function BitbucketCredentialsSettings({
                 size="xs"
                 variant="outline"
                 disabled={saving}
-                onClick={() => void save({ accessToken: "", email: "", apiToken: "" })}
+                onClick={() =>
+                  void save({
+                    serverUrl: saved.serverUrl ?? "",
+                    accessToken: "",
+                    email: "",
+                    apiToken: "",
+                  })
+                }
               >
                 Remove
               </Button>

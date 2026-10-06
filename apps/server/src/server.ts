@@ -289,7 +289,8 @@ const layerRepositoryIdentityResolver = Layer.effect(
           !identity.rootPath ||
           (identity.provider !== undefined &&
             identity.provider !== "unknown" &&
-            identity.provider !== "forgejo")
+            identity.provider !== "forgejo" &&
+            identity.provider !== "bitbucket")
         )
           return identity;
         const handle = yield* registry.resolveHandle({
@@ -300,6 +301,21 @@ const layerRepositoryIdentityResolver = Layer.effect(
             remoteUrl: identity.locator.remoteUrl,
           },
         });
+        if (handle.context?.provider.kind === "bitbucket") {
+          const parts = remote.path.replace(/\.git$/iu, "").split("/");
+          const project = parts.at(-2),
+            slug = parts.at(-1);
+          if (!project || !slug) return identity;
+          const base = handle.context.provider.baseUrl;
+          return {
+            ...identity,
+            provider: "bitbucket",
+            displayName: `${project}/${slug}`,
+            owner: project,
+            name: slug,
+            webUrl: `${base}/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(slug)}`,
+          };
+        }
         if (handle.context?.provider.kind !== "forgejo") return identity;
         const baseUrl = handle.context.provider.baseUrl.replace(/\/+$/, "");
         const basePath = new URL(baseUrl).pathname.replace(/^\/+|\/+$/g, "");

@@ -1312,14 +1312,17 @@ export function pullRequestHostOf(
     | {
         readonly canonicalKey?: string | undefined;
         readonly locator?: { readonly remoteUrl: string } | undefined;
+        readonly webUrl?: string | undefined;
       }
     | null
     | undefined,
   kind: SourceControlProviderKind,
 ): string {
-  if (kind === "forgejo") {
+  if (kind === "forgejo" || kind === "bitbucket") {
     try {
-      const remote = new URL(identity?.locator?.remoteUrl ?? "");
+      const remote = new URL(
+        (kind === "bitbucket" ? identity?.webUrl : undefined) ?? identity?.locator?.remoteUrl ?? "",
+      );
       if (remote.protocol === "http:" || remote.protocol === "https:")
         return remote.host.toLowerCase();
     } catch {

@@ -256,10 +256,23 @@ export function detectSourceControlProviderFromRemoteUrl(
     };
   }
 
+  const dataCenterPath =
+    /^(.*)\/(?:scm\/[^/]+\/[^/]+(?:\.git)?|(?:projects|users)\/[^/]+\/repos\/[^/]+)(?:\/.*)?$/iu;
+  if (/^https?:/iu.test(remoteUrl.trim())) {
+    const url = new URL(remoteUrl.trim());
+    const path = dataCenterPath.exec(url.pathname);
+    if (path && hostname !== "bitbucket.org")
+      return {
+        kind: "bitbucket",
+        name: "Bitbucket Data Center",
+        baseUrl: `${url.origin}${path[1]}`,
+      };
+  }
+
   if (isBitbucketHost(hostname)) {
     return {
       kind: "bitbucket",
-      name: hostname === "bitbucket.org" ? "Bitbucket" : "Bitbucket Self-Hosted",
+      name: hostname === "bitbucket.org" ? "Bitbucket" : "Bitbucket Data Center",
       baseUrl: toBaseUrl(host),
     };
   }

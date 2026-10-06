@@ -180,7 +180,7 @@ export const make = Effect.gen(function* () {
             truncated: batch.truncated,
             // Bitbucket is asked for `-updated_on` whether or not it is being carried on from,
             // so every page it answers is one a cursor can continue.
-            continues: true,
+            continues: batch.continues ?? true,
           })),
         ),
 

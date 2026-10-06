@@ -338,3 +338,16 @@ describe("naming the file a tick belongs to", () => {
     ).toThrow();
   });
 });
+
+it("uses the configured Data Center web port for an SSH repository's pull requests", () => {
+  expect(
+    pullRequestHostOf(
+      {
+        canonicalKey: "git.company.test/proj/app",
+        locator: { remoteUrl: "ssh://git@git.company.test:7999/PROJ/app.git" },
+        webUrl: "https://git.company.test:8443/bitbucket/projects/PROJ/repos/app",
+      },
+      "bitbucket",
+    ),
+  ).toBe("git.company.test:8443");
+});

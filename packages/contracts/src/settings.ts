@@ -1007,6 +1007,8 @@ export type UsageLimitSourceConfig = typeof UsageLimitSourceConfig.Type;
  * set. The access token wins when both kinds are configured.
  */
 export const BitbucketSettings = Schema.Struct({
+  /** Empty or absent uses Bitbucket Cloud. Include any Data Center context path. */
+  serverUrl: Schema.optionalKey(TrimmedString),
   email: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   accessToken: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   apiToken: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -1709,6 +1711,7 @@ export const ServerSettingsPatch = Schema.Struct({
   /** An empty token clears it; an omitted one keeps what the server has. */
   bitbucket: Schema.optionalKey(
     Schema.Struct({
+      serverUrl: Schema.optionalKey(TrimmedString),
       email: Schema.optionalKey(TrimmedString),
       accessToken: Schema.optionalKey(TrimmedString),
       apiToken: Schema.optionalKey(TrimmedString),

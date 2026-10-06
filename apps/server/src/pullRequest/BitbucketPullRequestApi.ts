@@ -39,6 +39,7 @@ import {
   type BitbucketPullRequest,
   type BitbucketRawComment,
 } from "./bitbucketPullRequestJson.ts";
+import * as BitbucketDataCenterPullRequestApi from "./BitbucketDataCenterPullRequestApi.ts";
 import type { ProviderListCursor } from "./PullRequestProvider.ts";
 
 /**
@@ -147,6 +148,7 @@ const DIFF_MAX_BYTES = 8 * 1024 * 1024;
 const REVISION_PATCH_TTL = Duration.seconds(5);
 const REVISION_PATCH_CAPACITY = 16;
 export interface BitbucketPullRequestBatch {
+  readonly continues?: boolean;
   readonly items: ReadonlyArray<BitbucketPullRequest>;
   readonly truncated: boolean;
 }
@@ -606,7 +608,7 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  return BitbucketPullRequestApi.of({
+  const cloud = BitbucketPullRequestApi.of({
     getViewer: () =>
       bitbucket.request({ method: "GET", url: "/user" }).pipe(
         Effect.flatMap((response): Effect.Effect<string, BitbucketPullRequestApiError> => {
@@ -936,6 +938,116 @@ export const make = Effect.gen(function* () {
             )}/resolve`,
           })
           .pipe(Effect.asVoid),
+      ),
+  });
+  const native = yield* BitbucketDataCenterPullRequestApi.make;
+  const route = <A>(
+    cloudEffect: () => Effect.Effect<A, BitbucketPullRequestApiError>,
+    nativeEffect: () => Effect.Effect<A, BitbucketPullRequestApiError>,
+  ) =>
+    bitbucket.getServerUrl.pipe(
+      Effect.flatMap((server) => (server ? nativeEffect() : cloudEffect())),
+    );
+  return BitbucketPullRequestApi.of({
+    getViewer: () =>
+      route(
+        () => cloud.getViewer(),
+        () => native.getViewer(),
+      ),
+    listPullRequests: (input) =>
+      route(
+        () => cloud.listPullRequests(input),
+        () => native.listPullRequests(input),
+      ),
+    getPullRequest: (input) =>
+      route(
+        () => cloud.getPullRequest(input),
+        () => native.getPullRequest(input),
+      ),
+    getRepositoryPermission: (input) =>
+      route(
+        () => cloud.getRepositoryPermission(input),
+        () => native.getRepositoryPermission(input),
+      ),
+    getPullRequestDiff: (input) =>
+      route(
+        () => cloud.getPullRequestDiff(input),
+        () => native.getPullRequestDiff(input),
+      ),
+    getDiffStat: (input) =>
+      route(
+        () => cloud.getDiffStat(input),
+        () => native.getDiffStat(input),
+      ),
+    getFileRevisions: (input) =>
+      route(
+        () => cloud.getFileRevisions(input),
+        () => native.getFileRevisions(input),
+      ),
+    getMergeability: (input) =>
+      route(
+        () => cloud.getMergeability(input),
+        () => native.getMergeability(input),
+      ),
+    listComments: (input) =>
+      route(
+        () => cloud.listComments(input),
+        () => native.listComments(input),
+      ),
+    listCommits: (input) =>
+      route(
+        () => cloud.listCommits(input),
+        () => native.listCommits(input),
+      ),
+    listChecks: (input) =>
+      route(
+        () => cloud.listChecks(input),
+        () => native.listChecks(input),
+      ),
+    listReviewerCandidates: (input) =>
+      route(
+        () => cloud.listReviewerCandidates(input),
+        () => native.listReviewerCandidates(input),
+      ),
+    setReviewerRequest: (input) =>
+      route(
+        () => cloud.setReviewerRequest(input),
+        () => native.setReviewerRequest(input),
+      ),
+    runAction: (input) =>
+      route(
+        () => cloud.runAction(input),
+        () => native.runAction(input),
+      ),
+    updateChangeRequest: (input) =>
+      route(
+        () => cloud.updateChangeRequest(input),
+        () => native.updateChangeRequest(input),
+      ),
+    comment: (input) =>
+      route(
+        () => cloud.comment(input),
+        () => native.comment(input),
+      ),
+    updateComment: (input) =>
+      route(
+        () => cloud.updateComment(input),
+        () => native.updateComment(input),
+      ),
+    submitReview: (input) =>
+      route(
+        () => cloud.submitReview(input),
+        () => native.submitReview(input),
+      ),
+    replyToComment: (input) =>
+      route(
+        () => cloud.replyToComment(input),
+        () => native.replyToComment(input),
+      ),
+    setCommentResolution: (input) =>
+      route(
+        () => cloud.setCommentResolution(input),
+        () => native.setCommentResolution(input),
       ),
   });
 });
